@@ -1,0 +1,13 @@
+# Meta Aria Uploader v2 - Required Dependencies
+# Python Version: 3.12.x ONLY (3.11 and 3.13 are NOT compatible)
+
+# Core dependency for VRS to MPS conversion
+# CRITICAL: Must be version 1.7.1 for Windows compatibility
+projectaria-tools==1.7.1
+
+# Google Cloud Storage for uploading MPS files
+# Minimum version 2.10.0, can use newer versions
+google-cloud-storage>=2.10.0
+
+# Note: tkinter (for GUI) is included with standard Python installations
+# If you get "tkinter not found" error, reinstall Python with tcl/tk option enabled

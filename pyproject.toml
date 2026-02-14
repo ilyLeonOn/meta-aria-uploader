@@ -1,0 +1,35 @@
+[project]
+name = "meta-aria-uploader"
+version = "0.2.0"
+description = "Convert VRS files to MPS format and upload to Google Cloud Storage"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "projectaria-tools==1.7.1",
+    "google-cloud-storage>=2.10.0",
+]
+
+[dependency-groups]
+dev = [
+    "coverage>=7.10.6",
+    "genbadge[coverage]>=1.1.2",
+    "isort>=6.0.1",
+    "mypy>=1.17.1",
+    "pytest>=8.4.1",
+    "radon>=6.0.1",
+    "ruff>=0.12.11",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.isort]
+profile = "black"
+
+[tool.uv]
+required-environments = "sys_platform == 'win32' and platform_machine == 'AMD64'"
+
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/meta-aria-uploader"]

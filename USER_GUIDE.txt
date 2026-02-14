@@ -1,0 +1,900 @@
+================================================================================
+                  ARIA UPLOADER V2.3 - USER GUIDE
+      VRS processing via Meta MPS service & Google Cloud Storage Uploader
+================================================================================
+
+**VERSION 2.3 CHANGELOG:**
+- NEW: Concurrency settings now configurable directly in UI (no code edits needed)
+- NEW: Processing mode selection (Convert+Upload, Convert Only, Upload Only)
+- IMPROVED: Better parallel processing with dynamic concurrency control
+- IMPROVED: Enhanced debug logging and progress tracking
+- UPDATED: This guide includes important notes about v2.3 quirks and limitations
+
+OVERVIEW
+--------
+This tool processes Meta Aria VRS files using Meta's MPS (Machine Perception
+Services) pipeline to produce processed outputs (SLAM, gaze, hand-tracking,
+summary data) and can upload those outputs to Google Cloud Storage. It
+supports parallel processing of multiple VRS files with real-time progress
+tracking.
+
+The processing extracts eye gaze, SLAM (Simultaneous Localization and
+Mapping), and hand tracking data from VRS recordings; note that MPS is a
+cloud service that produces multiple output files and folders, not a single
+"MPS file".
+
+
+================================================================================
+SYSTEM REQUIREMENTS
+================================================================================
+
+CRITICAL REQUIREMENTS:
+---------------------
+1. **Python Version: 3.12 ONLY**
+   - The program MUST run on Python 3.12
+   - Project Aria Tools 1.7.1 requires Python 3.12
+   - Other Python versions (3.11, 3.13, etc.) will cause installation failures
+   - If Project Aria Tools fails to install, check your Python version first
+
+2. **Project Aria Tools Version: 1.7.1**
+   - This is the ONLY version compatible with Windows
+   - Version 1.7.0 or earlier: Missing features, unstable
+   - Version 1.8.0 or later: May not be Windows-compatible
+   - Installation command: pip install projectaria-tools==1.7.1
+
+3. **Storage Requirements:**
+   - **MINIMUM: 2x the size of your VRS file**
+   - **RECOMMENDED: 3x the size of your VRS file**
+   
+   Why? The conversion creates temporary .enc (encrypted) files that are 
+   the SAME SIZE as the original VRS file before uploading.
+   
+   Example:
+   - VRS file: 20 GB
+   - MPS outputs folder: ~5 GB
+   - Temporary .enc file: 20 GB
+   - Total needed: ~45 GB
+   
+   **IMPORTANT:** If you run out of storage during conversion:
+   - The .enc file creation will fail silently
+   - Upload will fail with no encrypted data
+   - A health_check.json file may appear (server thinks health check failed)
+   - Solution: Free up space and restart the conversion
+
+4. **Network Requirements:**
+   - Active internet connection for:
+     * Meta account authentication (during conversion)
+     * Google Cloud Storage upload
+   - Stable connection required (large file uploads can take hours)
+
+
+================================================================================
+INSTALLATION & SETUP
+================================================================================
+
+STEP 1: Install Python 3.12
+----------------------------
+Download from: https://www.python.org/downloads/
+Verify installation: python --version
+Should show: Python 3.12.x
+
+STEP 2: Set Up Virtual Environment
+-----------------------------------
+Recommended tool: uv (faster than pip)
+Install uv: pip install uv
+
+Create virtual environment:
+  uv venv .venv
+  
+Activate virtual environment:
+  Windows PowerShell: .venv\Scripts\Activate.ps1
+  Windows CMD: .venv\Scripts\activate.bat
+
+STEP 3: Install Dependencies
+-----------------------------
+**REQUIRED PACKAGES:**
+1. projectaria-tools==1.7.1 (EXACT version required for Windows)
+2. google-cloud-storage>=2.10.0 (For GCS upload)
+
+**INSTALLATION OPTIONS:**
+
+Option A: Using requirements.txt (Simplest):
+  pip install -r requirements.txt
+  OR
+  uv pip install -r requirements.txt
+
+Option B: Using uv (recommended - faster):
+  uv pip install projectaria-tools==1.7.1
+  uv pip install google-cloud-storage
+
+Option C: Using pip:
+  pip install projectaria-tools==1.7.1
+  pip install google-cloud-storage
+
+Option D: Install from pyproject.toml (if transferring project):
+  cd "path\to\Meta Aria Uploader"
+  uv pip install -e .
+  OR
+  pip install -e .
+
+**VERIFY INSTALLATION:**
+Check that all packages are installed correctly:
+  python -c "import projectaria_tools; print('Project Aria Tools OK')"
+  python -c "from google.cloud import storage; print('Google Cloud Storage OK')"
+  python -c "import tkinter; print('Tkinter OK')"
+
+All three commands should print "OK" without errors
+
+STEP 4: Verify aria_mps CLI
+----------------------------
+Check if aria_mps.exe exists:
+  .venv\Scripts\aria_mps.exe --help
+
+If not found, reinstall Project Aria Tools.
+
+STEP 5: Prepare Google Cloud Credentials
+-----------------------------------------
+1. Create a Google Cloud Project
+2. Enable Cloud Storage API
+3. Create a Service Account with Storage Admin role
+4. Download the JSON key file
+5. Keep the path to this JSON file handy
+
+
+================================================================================
+HOW TO USE THE PROGRAM
+================================================================================
+
+LAUNCHING THE APPLICATION:
+--------------------------
+python aria_uploader_v2.py
+
+Or run via your IDE (VS Code, PyCharm, etc.)
+
+GUI INTERFACE:
+--------------
+The application has a graphical interface with the following sections:
+
+1. **Aria / MPS Credentials (Top Section)**
+   - Username: Your Meta account email
+   - Password: Your Meta account password
+   - Click "Save Credentials" to store locally (encrypted)
+
+2. **VRS Files Selection**
+   - "Select VRS Files" button: Choose one or multiple .vrs files
+   - Files appear in the list below the button
+   - "Remove Selected" button: Remove files from the list
+
+3. **Save Location (Optional)**
+   - Leave empty: Processed MPS outputs saved in the same directory as the VRS file
+   - Specify path: All MPS output folders created in that location
+   - Example: If VRS is in D:\recordings\, MPS outputs go to D:\recordings\mps_filename_vrs\
+
+4. **Google Cloud Settings**
+   - Credentials Path: Browse to your service account JSON file
+   - Bucket Name: Name of your GCS bucket (e.g., "aria-recordings")
+   - Create Folder Prefix (optional): Organize uploads in subdirectories
+   - Click "Save GCS Settings" to store locally
+
+5. **Concurrency Settings (NEW in v2.3)**
+   - Max Concurrent Conversions: Set the number of files to convert in parallel
+   - Default: 2 simultaneous conversions
+   - Range: 1-16 (higher values use more CPU/RAM/disk)
+   - Changes take effect on the next batch of conversions
+   - ⚠️  See "CONCURRENCY SETTINGS" section below for detailed info
+
+6. **Processing Mode Selection (NEW in v2.3)**
+   - Convert + Upload: Full conversion and upload to Google Cloud (default)
+   - Convert Only: Skip upload, save MPS outputs locally only
+   - Upload Only: Skip conversion, upload existing MPS outputs to Google Cloud
+
+7. **Progress Monitoring**
+   - Progress bar: Updates every 1 second (average across all files)
+   - Debug console: Shows detailed status, updates every 5 seconds
+   - Terminal/console: Best for real-time detailed logs
+   - ⚠️  See "MONITORING NOTES" section below for important quirks
+
+8. **Start Conversion**
+   - Click "Start" once all settings are configured
+   - Button disables during processing
+   - Monitor progress in debug console and terminal
+
+
+================================================================================
+CONVERSION PROCESS STAGES
+================================================================================
+
+The conversion follows these stages IN ORDER:
+
+1. **HASHING** (Usually ~5 minutes per file)
+   - Calculates cryptographic hash of VRS file
+   - Verifies file integrity
+   - Progress shown as percentage (0-100%)
+
+2. **HEALTH CHECK** (Usually <1 minute)
+   - Validates VRS file structure
+   - Checks for corruption or missing data
+   - Creates health_check.json with validation results
+
+2.5 **Reindexing** (This can take ~10 minutes per file)
+   - Validates VRS file structure
+   - Checks for corruption or missing data
+   - Creates health_check.json with validation results
+
+3. **ENCRYPTING** (Usually ~5-15 minutes per file)
+   - Creates .enc encrypted file (same size as VRS)
+   - **THIS IS WHY YOU NEED EXTRA STORAGE**
+   - .enc file is temporary and deleted after upload
+   - Progress displayed as percentage (0-100%)
+
+4. **UPLOADING / DOWNLOADING** (Time varies based on file size and internet speed, usually takes hours)
+   - Uploads encrypted data to Meta's servers
+   - Shows as "Uploading" in debug messages
+   - Sometimes displays as "Downloading" — this refers to final-stage data transfer and is not an error
+   - Upload triggers server-side MPS processing (the MPS cloud service processes the uploaded data)
+   - Progress displayed as percentage (0-100%)
+
+5. **PROCESSING** (Server-side, can take 30min-2hours)
+   - Meta's MPS cloud service processes the uploaded VRS data
+   - Extracts eye gaze, SLAM, hand tracking features and produces multiple output files/folders
+   - No percentage displayed - just know it's processing
+   - Processed outputs are downloaded to the local output directory once ready
+
+**IMPORTANT NOTES ABOUT STAGES:**
+- Order is ALWAYS: Hashing → Health Check → Encrypting → Uploading → Processing
+- Percentage shown for: Hashing, Encrypting, Uploading stages ONLY
+- Health Check and Processing stages may not show percentage
+- \"Sorting Index\" message = reindexing phase (usually single yellow debug message, just one line)
+- Second conversion of same file may skip some stages (Health Check, Encrypting) and finish faster
+- Files at DIFFERENT stages simultaneously causes progress bar to jump back/forth (see MONITORING NOTES)
+
+FINAL OUTPUT:
+-------------
+MPS outputs folder structure (mps_filename_vrs/):
+  ├── eye_gaze/
+  │   └── generalized_eye_gaze.csv
+  ├── hand_tracking/
+  │   └── wrist_and_palm_poses.csv
+  ├── slam/
+  │   ├── closed_loop_trajectory.csv
+  │   ├── semidense_points.csv.gz
+  │   └── semidense_observations.csv.gz
+  └── summary.json
+
+All of these files and folders are uploaded to Google Cloud Storage preserving 
+the directory structure.
+
+
+================================================================================
+PARALLEL PROCESSING & PERFORMANCE
+================================================================================
+
+CONCURRENT CONVERSION LIMIT:
+----------------------------
+**Default: 2 files can convert simultaneously**
+
+**NEW IN v2.3:** No need to edit code! Change concurrency in the UI:
+  1. Find "Concurrency Settings" section in the program
+  2. Enter desired max concurrent conversions (1-16)
+  3. Click "Apply" to save changes
+  4. Changes take effect on the next batch
+
+**OLD METHOD (still works if you prefer):**
+Edit aria_uploader_v2.3.py around line 809:
+  self._max_concurrent_conversions = 2  # Change this number directly
+
+How It Works:
+- If you select 5 files and limit is 2:
+  * Files 1-2 start immediately
+  * Files 3-5 wait in queue
+  * When File 1 finishes, File 3 starts
+  * When File 2 finishes, File 4 starts, etc.
+
+TRADEOFFS:
+
+Increasing the limit (e.g., 3→5):
+  ✓ PROS:
+    - Faster batch processing if you have many files
+    - Better CPU utilization on high-end systems
+  
+  ✗ CONS:
+    - Much higher CPU usage (hashing is CPU-intensive)
+    - Much higher disk I/O (reading multiple 20GB+ files simultaneously)
+    - Higher memory usage (each aria_mps process uses 1-2GB RAM)
+    - Could actually SLOW DOWN individual conversions due to resource contention
+    - Higher risk of running out of disk space if multiple .enc files created
+
+RECOMMENDATIONS:
+- 2-4 cores: Keep at 2 concurrent
+- 6-8 cores: Try 3 concurrent
+- 10+ cores + fast SSD: Can try 4-5 concurrent
+- Monitor Task Manager during conversion to check CPU/disk usage
+
+AUTHENTICATION DELAY:
+---------------------
+There is a built-in 3-second gap between each aria_mps process start.
+
+Why? Prevents authentication race conditions where multiple processes try to 
+authenticate with Meta's servers simultaneously, causing crashes.
+
+How it works:
+- File 1 starts → authenticates → waits 3 seconds → continues
+- File 2 waits for File 1's auth to complete → authenticates → waits 3 seconds
+- This serialization prevents authentication conflicts
+
+
+================================================================================
+SAVED SETTINGS & CREDENTIALS
+================================================================================
+
+AUTOMATIC SAVING:
+-----------------
+The program saves your settings locally in:
+  %USERPROFILE%\.aria_uploader\
+  (Usually: C:\Users\YourName\.aria_uploader\)
+
+Files created:
+1. credentials.json - Encrypted Aria username/password (stored locally in %USERPROFILE%\\.aria_uploader)
+2. gcloud_settings.json - Stores path to your Google service account JSON, bucket name, and folder prefix
+
+LOADING:
+--------
+On program startup, saved settings automatically populate the GUI fields.
+You don't need to re-enter credentials every time.
+
+SECURITY:
+---------
+- Credentials are stored locally on your machine only
+- Files are JSON format (human-readable but should be kept private)
+- No data is sent to third parties except:
+  * Meta servers (for MPS conversion - required)
+  * Google Cloud (for file upload - you control this)
+
+CLEARING SAVED DATA:
+--------------------
+Delete the folder: %USERPROFILE%\.aria_uploader\
+
+
+================================================================================
+SKIP EXISTING FILES FEATURE
+================================================================================
+
+**IMPORTANT:** If conversion completes but upload fails, don't panic!
+
+The program automatically detects existing MPS outputs folders:
+
+Behavior:
+1. You start conversion of "recording_001.vrs"
+2. MPS conversion succeeds → creates mps_recording_001_vrs/ folder
+3. Upload to Google Cloud fails (network issue, wrong bucket, etc.)
+4. You fix the upload settings and click "Start" again
+5. **Program detects existing MPS outputs folder and SKIPS conversion**
+6. Goes straight to upload step
+
+Benefits:
+- Saves hours of re-conversion time
+- Preserves existing MPS data
+- Only re-uploads to cloud
+
+How to Force Re-conversion:
+- Delete or rename the existing mps_*_vrs folder
+- Program will detect it's missing and convert again
+
+
+================================================================================
+MONITORING & DEBUGGING
+================================================================================
+
+PROGRESS TRACKING:
+------------------
+1. **Progress Bar (Bottom of GUI)**
+   - Updates every 1 second
+   - Shows AVERAGE progress across all files
+   - Example: File 1 at 50%, File 2 at 30% → Bar shows 40%
+   - ⚠️  BUG IN v2.3: Bar may jump back and forth when files are at different stages
+     (This is expected when one file is encrypting while another is still hashing)
+     The bar will stabilize once all files reach the same stage
+
+2. **Debug Console (Text Box in GUI)**
+   - Updates every 5 seconds
+   - Shows current stage and percentage for EACH file
+   - Example output:
+     [recording_001] Hashing 45.2%
+     [recording_002] Health Check 100%
+     [recording_003] Waiting to start...
+   - ⚠️  May show "ERROR" messages even when program is working fine (see MONITORING NOTES)
+   - ⚠️  Same debug message may appear duplicated - this is normal, ignore it
+
+3. **Terminal/Console Window**
+   - Real-time updates (no delay)
+   - Most detailed information
+   - Shows aria_mps raw output
+   - **USE THIS for accurate status, not the GUI debug box**
+   - RECOMMENDED for monitoring long conversions
+
+LOG FILE LOCATION:
+------------------
+Detailed logs saved to:
+  %USERPROFILE%\.aria_uploader\aria_uploader_v2.log
+  (Usually: C:\Users\YourName\.aria_uploader\aria_uploader_v2.log)
+
+The log file contains:
+- Every aria_mps output line
+- Error stack traces
+- Semaphore acquire/release events
+- Authentication events
+- Upload progress details
+
+RECOMMENDED for troubleshooting:
+- ALWAYS check the log file FIRST before other sources
+- Open the log file in a text editor
+- Search for "ERROR" to find actual problems
+- Debug messages flood the terminal quickly, having a log sheet is worth it
+- Look for the timestamp matching when your issue occurred
+
+
+================================================================================
+MONITORING NOTES (IMPORTANT FOR v2.3 - EXPECTED BEHAVIORS)
+================================================================================
+
+**The following are NORMAL and expected - DO NOT panic if you see them:**
+
+1. **Progress Bar Jumping Back & Forth**
+   - Happens when files are at different stages of conversion
+   - Example: File 1 at 50% Encrypting, File 2 at 30% Hashing
+   - Bar jumps because it's averaging different percentages from each file
+   - ✓ NORMAL - will stabilize once all files reach the same stage
+   - ✗ NOT an error or crash
+   - Action: Just keep waiting
+
+2. **Debug Console Shows "ERROR" Messages**
+   - Debug box may display error messages that look concerning
+   - Program continues working fine (no pop-up window appears)
+   - ✓ NORMAL - these are usually just warnings from aria_mps
+   - ✗ Don't stop the conversion just because you see \"ERROR\" in debug box
+   - Exception: If a SEPARATE POP-UP window appears saying \"Conversion Failed\", then stop
+   - Action: Ignore red error text in debug box unless there's a pop-up
+
+3. **Same Debug Message Appears Multiple Times (Duplicated)**
+   - Same line of output may repeat multiple times in the debug console
+   - ✓ NORMAL - this is a quirk in v2.3
+   - ✗ NOT a crash or infinite loop
+   - Action: Ignore duplicate messages
+
+4. **\"Sorting Index\" Message with Single Yellow Line**
+   - This means reindexing phase is happening
+   - Usually shows just ONE or TWO yellow debug messages
+   - This can last 10+ minutes with no further output
+   - ✓ NORMAL - be patient, don't assume it crashed
+   - ✗ NOT a freeze or crash
+   - Action: Be patient and wait 30+ minutes before concluding it's frozen
+
+5. **Conversion Finishes Much Faster Than Expected**
+   - If converting the same VRS file a second time, it may go much faster
+   - Server skips redundant stages (Health Check, Encrypting, Reindexing)
+   - ✓ NORMAL - file was already indexed by the server before
+   - ✗ This is actually desired behavior (faster processing)
+   - Action: This is good! Means the file is cached on server
+
+6. **No Percentage for Health Check or Processing Stages**
+   - Healthcare Check and final Processing stages won't show progress percentage
+   - Only Hashing, Encrypting, and Uploading stages show numerical percentages
+   - ✓ NORMAL - these stages are hard to track progress for
+   - ✗ NOT an error
+   - Action: Just wait and check terminal for status updates
+
+7. **Terminal Output Stops Updating Briefly**
+   - During reindexing (sorting) phase, terminal may be silent for 10-30 minutes
+   - ✓ NORMAL - reindexing is I/O heavy and slow
+   - ✗ NOT a crash (check process in Task Manager to confirm it's still running)
+   - Action: Be very patient, this is expected
+
+**HOW TO TELL IF PROGRAM ACTUALLY FAILED:**
+- A POP-UP window appears saying \"Conversion Failed\", \"Error\", etc.
+- Terminal output completely stops for 30+ minutes (no output at all)
+- Conversion finishes in less than 5 minutes for a 10GB file (clearly wrong)
+- Log file has actual ERROR messages with stack traces (not just debug noise)
+
+If ANY of the above signs appear, then the program actually failed and you should stop.
+
+
+================================================================================
+-----------------------------------------------------------------
+CAUSE: Project Aria Tools not installed or wrong version
+
+SOLUTION:
+1. Check Python version: python --version (must be 3.12.x)
+2. Reinstall Project Aria Tools:
+   pip uninstall projectaria-tools
+   pip install projectaria-tools==1.7.1
+3. Verify: .venv\Scripts\aria_mps.exe --help
+4. If still failing, recreate virtual environment
+
+
+PROBLEM 2: Upload fails with "no .enc file found" or health_check.json appears
+-------------------------------------------------------------------------------
+CAUSE: Insufficient disk space during encryption stage
+
+SOLUTION:
+1. Check available space on drive where VRS is stored
+2. Ensure at least 3x VRS file size is available
+3. Delete old MPS folders or .enc files if found
+4. Restart conversion with more free space
+
+
+PROBLEM 3: "Authentication failed" or crashes during authentication
+--------------------------------------------------------------------
+CAUSE: Meta account credentials incorrect or network issues
+
+SOLUTION:
+1. Verify username/password are correct (try logging in to Meta manually)
+2. Check internet connection
+3. Retry - sometimes Meta's auth servers are temporarily unavailable
+4. Check log file for detailed error message
+
+
+PROBLEM 4: Multiple files fail randomly during batch processing
+----------------------------------------------------------------
+CAUSE: Usually authentication race condition (now fixed with 3-second delay)
+
+SOLUTION:
+1. Update to latest version (includes auth lock fix)
+2. Reduce concurrent conversion limit to 2
+3. Check system resources (CPU/RAM/disk) aren't maxed out
+
+
+PROBLEM 5: Upload to Google Cloud fails with "bucket not found"
+----------------------------------------------------------------
+CAUSE: Bucket name incorrect, permissions issue, or credentials wrong
+
+SOLUTION:
+1. Verify bucket exists: https://console.cloud.google.com/storage
+2. Check bucket name spelling (case-sensitive)
+3. Verify service account has "Storage Admin" or "Storage Object Creator" role
+4. Re-download service account JSON key if unsure
+5. Test credentials: gsutil ls gs://your-bucket-name
+
+
+PROBLEM 6: Program freezes or becomes unresponsive
+---------------------------------------------------
+CAUSE: Long-running conversion, not actually frozen
+
+SOLUTION:
+1. Check terminal output - if still printing, it's working
+2. Large VRS files (20GB+) can take 30+ minutes for hashing alone
+3. Be patient - check progress every 5-10 minutes
+4. If truly frozen (no terminal output for 15+ min), check log file for errors
+
+
+PROBLEM 7: ".venv" errors or "module not found" errors
+-------------------------------------------------------
+CAUSE: Virtual environment corrupted or wrong PATH
+
+SOLUTION:
+1. Deactivate current venv: deactivate
+2. Delete .venv folder entirely
+3. Recreate: uv venv .venv (or python -m venv .venv)
+4. Activate: .venv\Scripts\Activate.ps1
+5. Reinstall ALL dependencies:
+   uv pip install projectaria-tools==1.7.1
+   uv pip install google-cloud-storage
+6. Verify: python -c "import projectaria_tools; print('OK')"
+
+
+PROBLEM 8: Files upload but to wrong location in bucket
+--------------------------------------------------------
+CAUSE: Folder prefix misconfigured or unexpected behavior
+
+UPLOADED STRUCTURE:
+Without folder prefix:
+  gs://your-bucket/mps_filename_vrs/eye_gaze/...
+  
+With folder prefix "aria-recordings":
+  gs://your-bucket/aria-recordings/mps_filename_vrs/eye_gaze/...
+
+SOLUTION:
+1. Check "Create Folder Prefix" checkbox if you want a folder
+2. Enter desired prefix name (no slashes needed)
+3. Clear checkbox to upload to bucket root
+
+
+PROBLEM 9: Conversion succeeds but some MPS outputs missing
+----------------------------------------------------------
+CAUSE: VRS file may not contain all sensor data, or server-side processing failed
+
+SOLUTION:
+1. Check summary.json in the MPS outputs folder for details
+2. Some features may not be available for all recordings
+3. Verify VRS was recorded with all sensors enabled
+4. Check Meta's documentation for MPS feature availability
+
+
+PROBLEM 10: Program won't start - GUI doesn't appear
+-----------------------------------------------------
+CAUSE: Tkinter not installed, Python environment issue
+
+SOLUTION:
+1. Verify tkinter: python -m tkinter
+   Should open a small test window
+2. If missing, reinstall Python 3.12 with tcl/tk option checked
+3. Try running from terminal to see error messages
+4. Check if antivirus is blocking execution
+
+
+================================================================================
+BEST PRACTICES
+================================================================================
+
+BEFORE STARTING:
+1. Check available disk space (need 3x VRS size)
+2. Ensure stable internet connection
+3. Test with ONE small file first to verify everything works
+4. Verify Aria credentials and Google Cloud credentials before batch processing
+5. Review the \"MONITORING NOTES\" section above to understand expected behaviors
+6. Understand that this process usually takes HOURS per file - be patient
+
+DURING CONVERSION:
+1. **Don't close the terminal window** (needed for monitoring output)
+2. **Use terminal for status, NOT the GUI debug box**
+   - Terminal shows accurate real-time output
+   - Debug box may show false error messages or lag behind
+3. Keep an eye on terminal output every 10-15 minutes
+4. Don't put computer to sleep (will pause uploads interrupting them)
+5. Avoid heavy disk usage from other programs (slows conversion)
+6. **Be PATIENT** - conversion can take hours per file
+   - 10GB file might take 30+ min just for hashing
+   - Large files (20GB+) can take 2-4 hours total
+   - This is NORMAL, not a failure
+
+BATCH PROCESSING:
+1. Start with 2-3 concurrent files to test stability
+2. Monitor CPU/RAM/disk usage while running
+3. Use the UI to adjust concurrency (new in v2.3) - NO code edits needed
+4. If seeing delays or errors, REDUCE concurrency (try 1-2)
+5. If system handles it well, can increase to 3-5
+6. Process overnight for large batches
+
+DEBUGGING & TROUBLESHOOTING:
+1. **Check terminal output FIRST** - this is the source of truth
+2. **Open log file for detailed errors**: %USERPROFILE%\\.aria_uploader\\aria_uploader_v2.log
+3. **Don't trust the GUI debug box** - it may show irrelevant errors
+4. Try with ONE file to isolate whether it's a batch issue or convert issue
+5. Remember: Progress bar jumping and debug errors are usually NORMAL (see MONITORING NOTES)
+6. If truly stuck, look at the log file for actual error stack traces
+
+THING TO IGNORE (These are NORMAL and not errors):
+- Progress bar jumps back and forth
+- Debug console shows \"ERROR\" messages
+- Same debug message appears multiple times
+- \"Sorting Index\" message with no further output for 30+ minutes
+- Reindexing phase hangs with no output - this is expected, very slow
+- Conversion finishes faster the 2nd time (file cached on server)
+----------------------------------
+The program preserves the MPS outputs folder structure when uploading to GCS:
+
+Local:
+  mps_filename_vrs/
+    ├── eye_gaze/generalized_eye_gaze.csv
+    ├── hand_tracking/wrist_and_palm_poses.csv
+    └── slam/closed_loop_trajectory.csv
+
+Google Cloud Storage:
+  gs://bucket/mps_filename_vrs/eye_gaze/generalized_eye_gaze.csv
+  gs://bucket/mps_filename_vrs/hand_tracking/wrist_and_palm_poses.csv
+  gs://bucket/mps_filename_vrs/slam/closed_loop_trajectory.csv
+
+All subdirectories and files are recursively uploaded.
+
+TEMPORARY FILES:
+----------------
+During conversion, temporary files are created and deleted:
+- .enc files: Deleted after successful upload to Meta servers
+- Lock files: May appear briefly during processing
+
+If .enc files remain after conversion:
+- Either the process crashed, or upload failed
+- Safe to delete manually to reclaim space
+
+NETWORK USAGE:
+--------------
+Expect high bandwidth usage:
+- Uploading: 20GB VRS = ~20GB upload to Meta + ~5GB download of MPS
+- Total: ~25GB per file
+- Multiple concurrent files = proportionally more bandwidth
+
+AUTHENTICATION TOKEN CACHING:
+------------------------------
+The aria_mps CLI has a --no-save-token flag set, meaning:
+- Authenticates fresh each time
+- Doesn't cache tokens locally
+- Slightly slower but more secure
+- No token file cleanup needed
+
+
+================================================================================
+SUPPORT & ADDITIONAL RESOURCES
+================================================================================
+
+For Project Aria Tools documentation:
+https://facebookresearch.github.io/projectaria_tools/
+
+For Google Cloud Storage Python client:
+https://cloud.google.com/storage/docs/reference/libraries#client-libraries-install-python
+
+For issues with this uploader tool:
+- Check the log file first: %USERPROFILE%\.aria_uploader\aria_uploader_v2.log
+- Review this guide's "Common Problems & Solutions" section
+- Contact the developer with log excerpts and error descriptions
+
+
+================================================================================
+TRANSFERRING TO ANOTHER COMPUTER
+================================================================================
+
+If you want to move this project to another computer without recompiling:
+
+METHOD 1: Using requirements.txt (Simplest & Fastest)
+------------------------------------------------------
+1. Copy the entire project folder to the new computer
+2. Ensure Python 3.12 is installed on the new computer:
+   python --version  (should show 3.12.x)
+3. Navigate to the project root directory:
+   cd "path\to\Meta Aria Uploader"
+4. Create a new virtual environment:
+   python -m venv .venv
+   OR
+   uv venv .venv
+5. Activate the virtual environment:
+   .venv\Scripts\Activate.ps1  (PowerShell)
+   OR
+   .venv\Scripts\activate.bat  (CMD)
+6. Install all dependencies from requirements.txt:
+   pip install -r requirements.txt
+   OR
+   uv pip install -r requirements.txt
+7. Verify installation:
+   python src\Aria-Uploader-v2\aria_uploader_v2.py
+
+METHOD 2: Using pyproject.toml
+-------------------------------
+1. Copy the entire project folder to the new computer
+2. Ensure Python 3.12 is installed on the new computer
+3. Navigate to the project root directory:
+   cd "path\to\Meta Aria Uploader"
+4. Create a new virtual environment:
+   python -m venv .venv
+   OR
+   uv venv .venv
+5. Activate the virtual environment:
+   .venv\Scripts\Activate.ps1  (PowerShell)
+   OR
+   .venv\Scripts\activate.bat  (CMD)
+6. Install all dependencies from pyproject.toml:
+   uv pip install -e .
+   OR
+   pip install -e .
+7. Verify installation:
+   python src\Aria-Uploader-v2\aria_uploader_v2.py
+
+METHOD 3: Using uv.lock (Ensures Exact Versions)
+-------------------------------------------------
+The uv.lock file locks all dependency versions to ensure consistency.
+
+1. Copy the entire project folder (including uv.lock)
+2. Install uv if not already installed:
+   pip install uv
+3. Navigate to project root and create venv:
+   cd "path\to\Meta Aria Uploader"
+   uv venv .venv
+4. Activate the virtual environment:
+   .venv\Scripts\Activate.ps1
+5. Install dependencies from lock file:
+   uv pip install -e .
+   
+   The uv.lock file ensures you get the EXACT same versions that were tested.
+
+METHOD 4: Manual Installation (If Lock Files Missing)
+------------------------------------------------------
+1. Copy the project folder
+2. Install Python 3.12
+3. Create and activate virtual environment
+4. Install REQUIRED packages manually:
+   pip install projectaria-tools==1.7.1
+   pip install google-cloud-storage
+
+WHAT TO COPY:
+-------------
+✓ MUST COPY:
+  - src/Aria-Uploader-v2/aria_uploader_v2.py (main program)
+  - requirements.txt (simple dependency list)
+  - pyproject.toml (dependency specification)
+  - uv.lock (version lock file - if using uv)
+  - README.md (project documentation)
+  - src/Aria-Uploader-v2/USER_GUIDE.txt (this file)
+
+✗ DO NOT COPY:
+  - .venv/ folder (create fresh on new computer)
+  - __pycache__/ folders (Python cache, regenerates automatically)
+  - .aria_uploader/ in %USERPROFILE% (contains user-specific credentials)
+
+TROUBLESHOOTING TRANSFER ISSUES:
+---------------------------------
+If the program won't run on the new computer:
+
+1. Python version mismatch:
+   python --version
+   Should show Python 3.12.x
+
+2. Missing packages:
+   python -m pip list
+   Look for: projectaria-tools (1.7.1), google-cloud-storage
+
+3. Virtual environment not activated:
+   Your prompt should show (.venv) prefix
+   If not, run: .venv\Scripts\Activate.ps1
+
+4. aria_mps.exe not found:
+   Check: .venv\Scripts\aria_mps.exe
+   If missing, reinstall: pip install projectaria-tools==1.7.1
+
+5. Import errors:
+   Delete .venv folder and recreate from scratch
+
+
+================================================================================
+RELIABILITY & STABILITY NOTES (IMPORTANT)
+================================================================================
+
+**MOST RELIABLE STAGE: Google Cloud Storage UPLOAD**
+- Very unlikely to encounter errors during GCS upload phase
+- If upload fails, usually a credentials, network, or permissions issue
+- Can often be retried successfully without re-converting
+- Use Processing Mode \"Upload Only\" to retry failed uploads
+
+**LEAST RELIABLE STAGE: VRS to MPS CONVERSION (Hashing, Encrypting, Processing)**
+- More prone to errors, especially with large files (10GB+)
+- May fail silently or with confusing error messages
+- Errors more likely if system resources are maxed out
+- Temperature and network stability matter here
+- Monitor this stage closely using terminal output
+
+**RECOMMENDATIONS FOR RELIABILITY:**
+- Use concurrent limit of 2 if you haven't tested higher values
+- Increase concurrency gradually (1 → 2 → 3) while monitoring for errors
+- Run conversions on a stable machine without heavy background processes
+- Ensure good ventilation (processing is CPU-intensive and generates heat)
+- Use a wired internet connection (WiFi can cause upload issues)
+- Monitor system temperature (conversion shouldn't exceed 85°C)
+- Review log file after each conversion to identify issues
+
+
+================================================================================
+VERSION INFORMATION
+================================================================================
+
+Program: Aria Uploader v2.3
+Python: 3.12.x (Required - EXACT version)
+Project Aria Tools: 1.7.1 (Required - EXACT version)
+Google Cloud Storage: >=2.10.0 (Any version 2.10.0 or newer)
+
+New in v2.3:
+- Concurrency settings configurable in UI (no code edits needed)
+- Processing mode selection: Convert+Upload, Convert Only, Upload Only
+- Improved progress tracking and logging
+- Better parallel processing with dynamic semaphore control
+
+Dependency Management:
+- pyproject.toml: Lists required packages and versions
+- uv.lock: Locks exact versions for reproducibility (created by uv)
+
+Built-in Python Libraries (No Installation Needed):
+- tkinter (GUI framework)
+- threading (Parallel processing)
+- json, os, pathlib, subprocess, logging (Standard library)
+
+Last Updated: February 2026 (v2.3)
+
+AUTHOR
+------
+Leo Qu — Author
+GitHub: https://github.com/ilyLeonOn
